@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My Bots Never Sleep — Live Pixel Room</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f1320;
+      color: #f4f6fb;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 16px;
+      gap: 12px;
+    }
+    .header, .live-bar, .status-bar {
+      width: 100%;
+      max-width: 900px;
+    }
+    .header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+    .title {
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      font-size: 1.1rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #94a3b8;
+      display: inline-block;
+    }
+    .dot.live { background: #4ade80; box-shadow: 0 0 8px #4ade80; }
+    .dot.error { background: #f87171; }
+    .controls, .live-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    input {
+      flex: 1 1 260px;
+      background: #171d31;
+      color: #fff;
+      border: 1px solid #323e66;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 0.85rem;
+    }
+    button {
+      background: #1e2640;
+      color: #fff;
+      border: 1px solid #394673;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:active { transform: scale(0.98); }
+    canvas {
+      width: 100%;
+      max-width: 900px;
+      aspect-ratio: 16 / 10;
+      border-radius: 12px;
+      border: 1px solid #283252;
+      background: #14192b;
+      image-rendering: pixelated;
+    }
+    .status-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px;
+    }
+    .card {
+      background: #171d31;
+      border: 1px solid #283252;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 0.85rem;
+    }
+    .meta {
+      margin-top: 4px;
+      font-size: 0.75rem;
+      color: #8796c4;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      margin-left: 6px;
+    }
+    .working { background: #1f5c3b; color: #7ef2b0; }
+    .processing { background: #634817; color: #ffd166; }
+    .idle { background: #29324d; color: #b8c4e6; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">
+      <span id="liveDot" class="dot"></span>
+      <span>MY BOTS NEVER SLEEP</span>
+      <span id="liveLabel" style="font-size:0.75rem;font-weight:600;color:#9fb0de;">DEMO MODE</span>
+    </div>
+    <div class="controls">
+      <button onclick="setBotState('bot1', 'working', 'Drafting social post')">Bot 1: Working</button>
+      <button onclick="setBotState('bot2', 'processing', 'Queuing & scheduling')">Bot 2: Processing</button>
+      <button onclick="setAllIdle()">Set All Idle</button>
+    </div>
+  </div>
+
+  <div class="live-bar">
+    <input
+      id="feedUrlInput"
+      type="url"
+      placeholder="Optional: Paste live JSON status URL (saved in browser)"
+    />
+    <button onclick="saveAndPollNow()">Connect Live</button>
+    <button id="togglePollBtn" onclick="togglePolling()">Pause Poll</button>
+  </div>
+
+  <canvas id="roomCanvas" width="900" height="560"></canvas>
+
+  <div class="status-bar" id="statusCards"></div>
+
+  <script>
+    const canvas = document.getElementById("roomCanvas");
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingEnabled = false;
+
+    const POLL_INTERVAL_MS = 3000;
+    const STORAGE_KEY = "bots_live_status_url";
+
+    const TILE_W = 64;
+    const TILE_H = 32;
+    const COLS = 8;
+    const ROWS = 8;
+    const ORIGIN_X = canvas.width / 2;
+    const ORIGIN_Y = 125;
+
+    const ZONES = {
+      desk:     { gx: 2, gy: 2, label: "Desk",   color: "#d98a3c" },
+      conveyor: { gx: 2, gy: 5, label: "Queue",  color: "#5b8def" },
+      lounge:   { gx: 5, gy: 5, label: "Lounge", color: "#9b6dff" }
+    };
+
+    const bots = [
+      {
+        id: "bot1",
+        name: "Social Bot",
+        state: "working",
+        task: "Drafting social post",
+        updatedAt: "Local preview",
+        color: "#4ade80",
+        gx: 2,
+        gy: 2,
+        targetZone: "desk"
+      },
+      {
+        id: "bot2",
+        name: "Queue Bot",
+        state: "processing",
+        task: "Queuing & scheduling",
+        updatedAt: "Local preview",
+        color: "#fbbf24",
+        gx: 2,
+        gy: 5,
+        targetZone: "conveyor"
+      }
+    ];
+
+    let isPolling = true;
+    let pollTimer = null;
+
+    function zoneForState(botId, state) {
+      if (state === "idle") return "lounge";
+      if (state === "processing") return "conveyor";
+      if (state === "working") return botId === "bot2" ? "conveyor" : "desk";
+      return "lounge";
+    }
+
+    function applyBotUpdate(update) {
+      const bot = bots.find(b => b.id === update.id);
+      if (!bot) return;
+      if (update.name) bot.name = update.name;
+      if (update.state) {
+        bot.state = update.state;
+        bot.targetZone = zoneForState(bot.id, bot.state);
+      }
+      if (typeof update.task === "string") bot.task = update.task;
+      bot.updatedAt = update.updatedAt || new Date().toLocaleTimeString();
+      renderStatusCards();
+    }
+
+    function setBotState(botId, state, task) {
+      applyBotUpdate({
+        id: botId,
+        state,
+        task,
+        updatedAt: new Date().toLocaleTimeString()
+      });
+    }
+
+    function setAllIdle() {
+      bots.forEach(bot => {
+        applyBotUpdate({
+          id: bot.id,
+          state: "idle",
+          task: "Resting in lounge",
+          updatedAt: new Date().toLocaleTimeString()
+        });
+      });
+    }
+
+    function setConnectionStatus(mode, text) {
+      const dot = document.getElementById("liveDot");
+      const label = document.getElementById("liveLabel");
+      dot.className = "dot" + (mode === "live" ? " live" : mode === "error" ? " error" : "");
+      label.textContent = text;
+    }
+
+    async function fetchLiveStatus() {
+      const url = document.getElementById("feedUrlInput").value.trim();
+      if (!url || !isPolling) {
+        setConnectionStatus("demo", isPolling ? "DEMO MODE" : "PAUSED");
+        return;
+      }
+
+      try {
+        const sep = url.includes("?") ? "&" : "?";
+        const res = await fetch(`${url}${sep}_t=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        // Supports either { bots: [...] } or [...]
+        const list = Array.isArray(data) ? data : data.bots;
+        if (Array.isArray(list)) {
+          list.forEach(applyBotUpdate);
+          setConnectionStatus("live", `LIVE (${new Date().toLocaleTimeString()})`);
+        } else {
+          throw new Error("Expected { bots: [...] }");
+        }
+      } catch (err) {
+        setConnectionStatus("error", "POLL ERROR");
+      }
+    }
+
+    function saveAndPollNow() {
+      const url = document.getElementById("feedUrlInput").value.trim();
+      if (url) {
+        localStorage.setItem(STORAGE_KEY, url);
+      } else {
+        localStorage.removeItem(STORAGE_KEY);
+      }
+      fetchLiveStatus();
+    }
+
+    function togglePolling() {
+      isPolling = !isPolling;
+      document.getElementById("togglePollBtn").textContent = isPolling ? "Pause Poll" : "Resume Poll";
+      fetchLiveStatus();
+    }
+
+    function isoToScreen(gx, gy) {
+      return {
+        x: ORIGIN_X + (gx - gy) * (TILE_W / 2),
+        y: ORIGIN_Y + (gx + gy) * (TILE_H / 2)
+      };
+    }
+
+    function drawIsoTile(gx, gy, fillColor, strokeColor = "#2d3759") {
+      const { x, y } = isoToScreen(gx, gy);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + TILE_W / 2, y + TILE_H / 2);
+      ctx.lineTo(x, y + TILE_H);
+      ctx.lineTo(x - TILE_W / 2, y + TILE_H / 2);
+      ctx.closePath();
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    function drawStation(zone) {
+      const { x, y } = isoToScreen(zone.gx, zone.gy);
+      const cx = x;
+      const cy = y + TILE_H / 2;
+
+      ctx.fillStyle = zone.color;
+      ctx.fillRect(Math.round(cx - 14), Math.round(cy - 18), 28, 14);
+      ctx.strokeStyle = "#0f1320";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(Math.round(cx - 14), Math.round(cy - 18), 28, 14);
+
+      ctx.fillStyle = "#dce3f7";
+      ctx.font = "bold 11px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(zone.label, cx, cy - 23);
+    }
+
+    function drawBot(bot, time) {
+      const target = ZONES[bot.targetZone] || ZONES.lounge;
+      bot.gx += (target.gx - bot.gx) * 0.06;
+      bot.gy += (target.gy - bot.gy) * 0.06;
+
+      const { x, y } = isoToScreen(bot.gx, bot.gy);
+      const bob = Math.sin(time * 0.006 + (bot.id === "bot1" ? 0 : 2)) * 3;
+      const bx = Math.round(x);
+      const by = Math.round(y + TILE_H / 2 - 14 + bob);
+
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.beginPath();
+      ctx.ellipse(Math.round(x), Math.round(y + TILE_H / 2), 10, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = bot.color;
+      ctx.fillRect(bx - 7, by - 8, 14, 14);
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillRect(bx - 6, by - 17, 12, 9);
+      ctx.fillStyle = "#0f1320";
+      ctx.fillRect(bx - 3, by - 14, 2, 2);
+      ctx.fillRect(bx + 2, by - 14, 2, 2);
+
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 11px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(bot.name, bx, by - 23);
+    }
+
+    function renderStatusCards() {
+      const container = document.getElementById("statusCards");
+      container.innerHTML = bots.map(bot => `
+        <div class="card">
+          <strong>${bot.name}</strong>
+          <span class="badge ${bot.state}">${bot.state}</span>
+          <div style="margin-top:6px;color:#aeb9d9;">${bot.task}</div>
+          <div class="meta">Updated: ${bot.updatedAt}</div>
+        </div>
+      `).join("");
+    }
+
+    function render(time) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      for (let gy = 0; gy < ROWS; gy++) {
+        for (let gx = 0; gx < COLS; gx++) {
+          const isChecker = (gx + gy) % 2 === 0;
+          drawIsoTile(gx, gy, isChecker ? "#242e4c" : "#1d2640");
+        }
+      }
+
+      drawStation(ZONES.desk);
+      drawStation(ZONES.conveyor);
+      drawStation(ZONES.lounge);
+
+      const sortedBots = [...bots].sort((a, b) => (a.gx + a.gy) - (b.gx + b.gy));
+      sortedBots.forEach(bot => drawBot(bot, time));
+
+      requestAnimationFrame(render);
+    }
+
+    const savedUrl = localStorage.getItem(STORAGE_KEY);
+    if (savedUrl) {
+      document.getElementById("feedUrlInput").value = savedUrl;
+    }
+
+    renderStatusCards();
+    fetchLiveStatus();
+    pollTimer = setInterval(fetchLiveStatus, POLL_INTERVAL_MS);
+    requestAnimationFrame(render);
+  </script>
+</body>
+</html>
