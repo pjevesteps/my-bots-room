@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My Bots Never Sleep — Pixel Room</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f1320;
+      color: #f4f6fb;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 16px;
+      gap: 12px;
+    }
+    .header {
+      width: 100%;
+      max-width: 900px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+    .title {
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      font-size: 1.1rem;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    button {
+      background: #1e2640;
+      color: #fff;
+      border: 1px solid #394673;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:active { transform: scale(0.98); }
+    canvas {
+      width: 100%;
+      max-width: 900px;
+      aspect-ratio: 16 / 10;
+      border-radius: 12px;
+      border: 1px solid #283252;
+      background: #14192b;
+      image-rendering: pixelated;
+    }
+    .status-bar {
+      width: 100%;
+      max-width: 900px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px;
+    }
+    .card {
+      background: #171d31;
+      border: 1px solid #283252;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 0.85rem;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      margin-left: 6px;
+    }
+    .working { background: #1f5c3b; color: #7ef2b0; }
+    .processing { background: #634817; color: #ffd166; }
+    .idle { background: #29324d; color: #b8c4e6; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="title">MY BOTS NEVER SLEEP — Room Monitor</div>
+    <div class="controls">
+      <button onclick="setBotState('bot1', 'working', 'Drafting social post')">Bot 1: Working</button>
+      <button onclick="setBotState('bot2', 'processing', 'Queuing & scheduling')">Bot 2: Processing</button>
+      <button onclick="setAllIdle()">Set All Idle</button>
+    </div>
+  </div>
+
+  <canvas id="roomCanvas" width="900" height="560"></canvas>
+
+  <div class="status-bar" id="statusCards"></div>
+
+  <script>
+    const canvas = document.getElementById("roomCanvas");
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingEnabled = false;
+
+    const TILE_W = 64;
+    const TILE_H = 32;
+    const COLS = 8;
+    const ROWS = 8;
+    const ORIGIN_X = canvas.width / 2;
+    const ORIGIN_Y = 125;
+
+    // Room zones in grid coordinates (gx, gy)
+    const ZONES = {
+      desk:      { gx: 2, gy: 2, label: "Desk", color: "#d98a3c" },
+      conveyor:  { gx: 2, gy: 5, label: "Queue", color: "#5b8def" },
+      lounge:    { gx: 5, gy: 5, label: "Lounge", color: "#9b6dff" }
+    };
+
+    const bots = [
+      {
+        id: "bot1",
+        name: "Social Bot",
+        state: "working",
+        task: "Drafting social post",
+        color: "#4ade80",
+        gx: 2,
+        gy: 2,
+        targetZone: "desk"
+      },
+      {
+        id: "bot2",
+        name: "Queue Bot",
+        state: "processing",
+        task: "Queuing & scheduling",
+        color: "#fbbf24",
+        gx: 2,
+        gy: 5,
+        targetZone: "conveyor"
+      }
+    ];
+
+    function isoToScreen(gx, gy) {
+      return {
+        x: ORIGIN_X + (gx - gy) * (TILE_W / 2),
+        y: ORIGIN_Y + (gx + gy) * (TILE_H / 2)
+      };
+    }
+
+    function drawIsoTile(gx, gy, fillColor, strokeColor = "#2d3759") {
+      const { x, y } = isoToScreen(gx, gy);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + TILE_W / 2, y + TILE_H / 2);
+      ctx.lineTo(x, y + TILE_H);
+      ctx.lineTo(x - TILE_W / 2, y + TILE_H / 2);
+      ctx.closePath();
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    function drawStation(zone) {
+      const { x, y } = isoToScreen(zone.gx, zone.gy);
+      const cx = x;
+      const cy = y + TILE_H / 2;
+
+      ctx.fillStyle = zone.color;
+      ctx.fillRect(Math.round(cx - 14), Math.round(cy - 18), 28, 14);
+      ctx.strokeStyle = "#0f1320";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(Math.round(cx - 14), Math.round(cy - 18), 28, 14);
+
+      ctx.fillStyle = "#dce3f7";
+      ctx.font = "bold 11px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(zone.label, cx, cy - 23);
+    }
+
+    function drawBot(bot, time) {
+      const target = bot.state === "idle" ? ZONES.lounge : ZONES[bot.targetZone];
+      bot.gx += (target.gx - bot.gx) * 0.06;
+      bot.gy += (target.gy - bot.gy) * 0.06;
+
+      const { x, y } = isoToScreen(bot.gx, bot.gy);
+      const bob = Math.sin(time * 0.006 + (bot.id === "bot1" ? 0 : 2)) * 3;
+      const bx = Math.round(x);
+      const by = Math.round(y + TILE_H / 2 - 14 + bob);
+
+      // Shadow
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.beginPath();
+      ctx.ellipse(Math.round(x), Math.round(y + TILE_H / 2), 10, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Pixel-style character body & head
+      ctx.fillStyle = bot.color;
+      ctx.fillRect(bx - 7, by - 8, 14, 14);
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillRect(bx - 6, by - 17, 12, 9);
+      ctx.fillStyle = "#0f1320";
+      ctx.fillRect(bx - 3, by - 14, 2, 2);
+      ctx.fillRect(bx + 2, by - 14, 2, 2);
+
+      // Name tag
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 11px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(bot.name, bx, by - 23);
+    }
+
+    function renderStatusCards() {
+      const container = document.getElementById("statusCards");
+      container.innerHTML = bots.map(bot => `
+        <div class="card">
+          <strong>${bot.name}</strong>
+          <span class="badge ${bot.state}">${bot.state}</span>
+          <div style="margin-top:6px;color:#aeb9d9;">${bot.task}</div>
+        </div>
+      `).join("");
+    }
+
+    function setBotState(botId, state, task) {
+      const bot = bots.find(b => b.id === botId);
+      if (!bot) return;
+      bot.state = state;
+      bot.task = task;
+      bot.targetZone = botId === "bot1" ? "desk" : "conveyor";
+      renderStatusCards();
+    }
+
+    function setAllIdle() {
+      bots.forEach(bot => {
+        bot.state = "idle";
+        bot.task = "Resting in lounge";
+      });
+      renderStatusCards();
+    }
+
+    function render(time) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      for (let gy = 0; gy < ROWS; gy++) {
+        for (let gx = 0; gx < COLS; gx++) {
+          const isChecker = (gx + gy) % 2 === 0;
+          drawIsoTile(gx, gy, isChecker ? "#242e4c" : "#1d2640");
+        }
+      }
+
+      drawStation(ZONES.desk);
+      drawStation(ZONES.conveyor);
+      drawStation(ZONES.lounge);
+
+      // Depth-sort bots back-to-front by (gx + gy)
+      const sortedBots = [...bots].sort((a, b) => (a.gx + a.gy) - (b.gx + b.gy));
+      sortedBots.forEach(bot => drawBot(bot, time));
+
+      requestAnimationFrame(render);
+    }
+
+    renderStatusCards();
+    requestAnimationFrame(render);
+  </script>
+</body>
+</html>
